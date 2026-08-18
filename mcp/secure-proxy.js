@@ -3,14 +3,21 @@ import { spawn } from "child_process";
 
 const PUBLIC_PORT = Number(process.env.PORT || 8787);
 const INTERNAL_PORT = Number(process.env.MCP_INTERNAL_PORT || 8788);
+
 const ACCESS_TOKEN = String(
   process.env.MCP_ACCESS_TOKEN ||
   process.env.LINJIAN_TOKEN ||
   ""
 ).trim();
 
+const PATH_SECRET = String(process.env.MCP_PATH_SECRET || "").trim();
+
 if (!ACCESS_TOKEN) {
   console.error("Missing MCP_ACCESS_TOKEN (or LINJIAN_TOKEN fallback). Refusing to start insecure MCP proxy.");
+  process.exit(1);
+}
+if (!PATH_SECRET) {
+  console.error("Missing MCP_PATH_SECRET. Refusing to expose unauthenticated MCP path.");
   process.exit(1);
 }
 
@@ -39,13 +46,34 @@ function unauthorized(res) {
   res.end(JSON.stringify({ ok: false, error: "unauthorized" }));
 }
 
-function isPublicPath(url = "") {
-  const path = String(url).split("?", 1)[0];
+function splitUrl(raw = "") {
+  const i = raw.indexOf("?");
+  return i >= 0
+    ? { path: raw.slice(0, i), query: raw.slice(i) }
+    : { path: raw, query: "" };
+}
+
+function publicPath(url = "") {
+  const { path } = splitUrl(String(url));
   return path === "/" || path === "/health";
 }
 
+function secretMcpPath(url = "") {
+  const { path, query } = splitUrl(String(url));
+  const expected = `/mcp/${encodeURIComponent(PATH_SECRET)}`;
+  if (path === expected) {
+    return `/mcp${query}`;
+  }
+  return "";
+}
+
 const proxy = http.createServer((req, res) => {
-  if (!isPublicPath(req.url)) {
+  const rewrittenSecretPath = secretMcpPath(req.url);
+
+  // Public health/root remain open.
+  // Secret URL authenticates by possession of MCP_PATH_SECRET.
+  // All other MCP/SSE/message paths still require Bearer authentication.
+  if (!publicPath(req.url) && !rewrittenSecretPath) {
     const expected = `Bearer ${ACCESS_TOKEN}`;
     const actual = String(req.headers.authorization || "");
     if (actual !== expected) {
@@ -61,7 +89,7 @@ const proxy = http.createServer((req, res) => {
     {
       hostname: "127.0.0.1",
       port: INTERNAL_PORT,
-      path: req.url,
+      path: rewrittenSecretPath || req.url,
       method: req.method,
       headers,
     },
@@ -85,5 +113,6 @@ const proxy = http.createServer((req, res) => {
 proxy.listen(PUBLIC_PORT, "0.0.0.0", () => {
   console.log(`Secure MCP proxy listening on 0.0.0.0:${PUBLIC_PORT}`);
   console.log(`Inner MCP listening on 127.0.0.1:${INTERNAL_PORT}`);
-  console.log("Auth: Authorization: Bearer <MCP_ACCESS_TOKEN>; falling back to LINJIAN_TOKEN when MCP_ACCESS_TOKEN is unset.");
+  console.log("Bearer auth remains enabled for /mcp, /sse, /messages.");
+  console.log("Secret-path auth enabled at /mcp/<MCP_PATH_SECRET>.");
 });
