@@ -38,7 +38,7 @@ services:
     plan: free
     rootDir: mcp
     buildCommand: npm install
-    startCommand: npm start
+    startCommand: node secure-proxy.js
     envVars:
       - fromGroup: zhangxinchuang-public-shared
       # 自动取 server 的公网 HTTPS 地址，例如 https://zhangxinchuang-server-xxxx.onrender.com
